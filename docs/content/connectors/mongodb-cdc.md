@@ -12,8 +12,8 @@ In order to setup the MongoDB CDC connector, the following table provides depend
 <dependency>
   <groupId>com.ververica</groupId>
   <artifactId>flink-connector-mongodb-cdc</artifactId>
-  <!-- The dependency is available only for stable releases, SNAPSHOT dependency need build by yourself. -->
-  <version>2.5-SNAPSHOT</version>
+  <!-- The dependency is available only for stable releases, SNAPSHOT dependencies need to be built based on master or release- branches by yourself. -->
+  <version>3.0-SNAPSHOT</version>
 </dependency>
 ```
 
@@ -21,7 +21,7 @@ In order to setup the MongoDB CDC connector, the following table provides depend
 
 ```Download link is available only for stable releases.```
 
-Download [flink-sql-connector-mongodb-cdc-2.5-SNAPSHOT.jar](https://repo1.maven.org/maven2/com/ververica/flink-sql-connector-mongodb-cdc/2.5-SNAPSHOT/flink-sql-connector-mongodb-cdc-2.5-SNAPSHOT.jar) and put it under `<FLINK_HOME>/lib/`.
+Download [flink-sql-connector-mongodb-cdc-3.0-SNAPSHOT.jar](https://repo1.maven.org/maven2/com/ververica/flink-sql-connector-mongodb-cdc/3.0-SNAPSHOT/flink-sql-connector-mongodb-cdc-3.0-SNAPSHOT.jar) and put it under `<FLINK_HOME>/lib/`.
 
 **Note:** flink-sql-connector-mongodb-cdc-XXX-SNAPSHOT version is the code corresponding to the development branch. Users need to download the source code and compile the corresponding jar. Users should use the released version, such as [flink-sql-connector-mongodb-cdc-2.2.1.jar](https://mvnrepository.com/artifact/com.ververica/flink-sql-connector-mongodb-cdc), the released version will be available in the Maven central warehouse.
 
@@ -256,6 +256,13 @@ Connector Options
       <td>The length of time in milliseconds between sending heartbeat messages. Use 0 to disable.</td>
     </tr>
     <tr>
+      <td>scan.full-changelog</td>
+      <td>optional</td>
+      <td style="word-wrap: break-word;">false</td>
+      <td>Boolean</td>
+      <td>Whether try to generate full-mode changelog based on pre- and post-images in MongoDB. Refer to <a href="#a-name-id-003-a">Full Changelog</a>  for more details. Supports MongoDB 6.0 and above only.</td>
+    </tr>
+    <tr>
       <td>scan.incremental.snapshot.enabled</td>
       <td>optional</td>
       <td style="word-wrap: break-word;">false</td>
@@ -270,11 +277,29 @@ Connector Options
       <td>The chunk size mb of incremental snapshot.</td>
     </tr>
     <tr>
+      <td>scan.incremental.snapshot.chunk.samples</td>
+      <td>optional</td>
+      <td style="word-wrap: break-word;">20</td>
+      <td>Integer</td>
+      <td>The samples count per chunk when using sample partition strategy during incremental snapshot.</td>
+    </tr>
+    <tr>
       <td>scan.incremental.close-idle-reader.enabled</td>
       <td>optional</td>
       <td style="word-wrap: break-word;">false</td>
       <td>Boolean</td>
-      <td>Whether to close idle readers at the end of the snapshot phase. The flink version is required to be greater than or equal to 1.14 when 'execution.checkpointing.checkpoints-after-tasks-finish.enabled' is set to true.</td>
+      <td>Whether to close idle readers at the end of the snapshot phase. <br>
+          The flink version is required to be greater than or equal to 1.14 when 'execution.checkpointing.checkpoints-after-tasks-finish.enabled' is set to true.<br>
+          If the flink version is greater than or equal to 1.15, the default value of 'execution.checkpointing.checkpoints-after-tasks-finish.enabled' has been changed to true,
+          so it does not need to be explicitly configured 'execution.checkpointing.checkpoints-after-tasks-finish.enabled' = 'true'
+      </td>
+    </tr>
+    <tr>
+      <td>scan.cursor.no-timeout</td>
+      <td>optional</td>
+      <td style="word-wrap: break-word;">true</td>
+      <td>Boolean</td>
+      <td>MongoDB server normally times out idle cursors after an inactivity period (10 minutes) to prevent excess memory use. Set this option to true to prevent that. Only available when parallelism snapshot is enabled.</td>
     </tr>
     </tbody>
 </table>
@@ -369,16 +394,11 @@ CREATE TABLE mongodb_source (...) WITH (
     'connector' = 'mongodb-cdc',
     'scan.startup.mode' = 'latest-offset', -- Start from latest offset
     ...
-    'scan.incremental.snapshot.enabled' = 'true', -- To use timestamp startup mode should enable incremental snapshot.
     'scan.startup.mode' = 'timestamp', -- Start from timestamp
     'scan.startup.timestamp-millis' = '1667232000000' -- Timestamp under timestamp startup mode
     ...
 )
 ```
-
-**Notes:**
-- 'timestamp' startup mode is not supported by legacy source. To use timestamp startup mode, you need to enable incremental snapshot.
-
 
 ### Change Streams
 
@@ -469,6 +489,59 @@ public class MongoDBIncrementalSourceExample {
 **Note:** 
 - If database regex is used, `readAnyDatabase` role is required.
 - The incremental snapshot feature only supports after MongoDB 4.0.
+
+### Full Changelog<a name="Full Changelog" id="003" ></a>
+
+MongoDB 6.0 and above supports emitting change stream events containing document before and after the change was made (aka. pre- and post-images).
+
+- The pre-image is the document before it was replaced, updated, or deleted. There is no pre-image for an inserted document.
+
+- The post-image is the document after it was inserted, replaced, or updated. There is no post-image for a deleted document.
+
+MongoDB CDC could make uses of pre-image and post-images to generate full-mode changelog stream including Insert, Update Before, Update After, and Delete data rows, thereby avoiding additional `ChangelogNormalize` downstream node.
+
+To enable this feature, here's some prerequisites:
+
+- MongoDB version must be 6.0 or above;
+- Enable `preAndPostImages` feature at the database level:
+```javascript
+db.runCommand({
+  setClusterParameter: {
+    changeStreamOptions: {
+      preAndPostImages: {
+        expireAfterSeconds: 'off' // replace with custom image expiration time
+      }
+    }
+  }
+})
+```
+- Enable `changeStreamPreAndPostImages` feature for collections to be monitored:
+```javascript
+db.runCommand({
+  collMod: "<< collection name >>", 
+  changeStreamPreAndPostImages: {
+    enabled: true 
+  } 
+})
+```
+- Enable MongoDB CDC's `scan.full-changelog` feature:
+
+```java
+MongoDBSource.builder()
+    .scanFullChangelog(true)
+    ...
+    .build()
+```
+
+or with Flink SQL:
+
+```SQL
+CREATE TABLE mongodb_source (...) WITH (
+    'connector' = 'mongodb-cdc',
+    'scan.full-changelog' = 'true',
+    ...
+)
+```
 
 Data Type Mapping
 ----------------
@@ -593,6 +666,7 @@ Reference
 - [WiredTiger](https://docs.mongodb.com/manual/core/wiredtiger/#std-label-storage-wiredtiger)
 - [Replica set protocol](https://docs.mongodb.com/manual/reference/replica-configuration/#mongodb-rsconf-rsconf.protocolVersion)
 - [Connection String Options](https://docs.mongodb.com/manual/reference/connection-string/#std-label-connections-connection-options)
+- [Document Pre- and Post-Images](https://www.mongodb.com/docs/v6.0/changeStreams/#change-streams-with-document-pre--and-post-images)
 - [BSON Types](https://docs.mongodb.com/manual/reference/bson-types/)
 - [Flink DataTypes](https://nightlies.apache.org/flink/flink-docs-release-1.17/docs/dev/table/types/)
 

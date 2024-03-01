@@ -13,8 +13,8 @@ In order to setup the Oracle CDC connector, the following table provides depende
 <dependency>
   <groupId>com.ververica</groupId>
   <artifactId>flink-connector-oracle-cdc</artifactId>
-  <!-- The dependency is available only for stable releases, SNAPSHOT dependency need build by yourself. -->
-  <version>2.5-SNAPSHOT</version>
+  <!-- The dependency is available only for stable releases, SNAPSHOT dependencies need to be built based on master or release- branches by yourself. -->
+  <version>3.0-SNAPSHOT</version>
 </dependency>
 ```
 
@@ -22,7 +22,7 @@ In order to setup the Oracle CDC connector, the following table provides depende
 
 **Download link is available only for stable releases.**
 
-Download [flink-sql-connector-oracle-cdc-2.5-SNAPSHOT.jar](https://repo1.maven.org/maven2/com/ververica/flink-sql-connector-oracle-cdc/2.5-SNAPSHOT/flink-sql-connector-oracle-cdc-2.5-SNAPSHOT.jar) and put it under `<FLINK_HOME>/lib/`.
+Download [flink-sql-connector-oracle-cdc-3.0-SNAPSHOT.jar](https://repo1.maven.org/maven2/com/ververica/flink-sql-connector-oracle-cdc/3.0-SNAPSHOT/flink-sql-connector-oracle-cdc-3.0-SNAPSHOT.jar) and put it under `<FLINK_HOME>/lib/`.
 
 **Note:** flink-sql-connector-oracle-cdc-XXX-SNAPSHOT version is the code corresponding to the development branch. Users need to download the source code and compile the corresponding jar. Users should use the released version, such as [flink-sql-connector-oracle-cdc-2.3.0.jar](https://mvnrepository.com/artifact/com.ververica/flink-sql-connector-oracle-cdc), the released version will be available in the Maven central warehouse.
 
@@ -96,6 +96,7 @@ You have to enable log archiving for Oracle database and define an Oracle user w
      GRANT EXECUTE_CATALOG_ROLE TO flinkuser;
      GRANT SELECT ANY TRANSACTION TO flinkuser;
      GRANT LOGMINING TO flinkuser;
+     GRANT ANALYZE ANY TO flinkuser;
 
      GRANT CREATE TABLE TO flinkuser;
      -- need not to execute if set scan.incremental.snapshot.enabled=true(default)
@@ -209,11 +210,11 @@ Flink SQL> CREATE TABLE products (
      'port' = '1521',
      'username' = 'flinkuser',
      'password' = 'flinkpw',
-     'database-name' = 'XE',
+     'database-name' = 'ORCLCDB',
      'schema-name' = 'inventory',
      'table-name' = 'products');
   
--- read snapshot and binlogs from products table
+-- read snapshot and redo logs from products table
 Flink SQL> SELECT * FROM products;
 ```
 **Note:**
@@ -362,7 +363,19 @@ Connector Options
       <td>optional</td>
       <td style="word-wrap: break-word;">false</td>
       <td>Boolean</td>
-      <td>Whether to close idle readers at the end of the snapshot phase. The flink version is required to be greater than or equal to 1.14 when 'execution.checkpointing.checkpoints-after-tasks-finish.enabled' is set to true.</td>
+      <td>Whether to close idle readers at the end of the snapshot phase. <br>
+          The flink version is required to be greater than or equal to 1.14 when 'execution.checkpointing.checkpoints-after-tasks-finish.enabled' is set to true.<br>
+          If the flink version is greater than or equal to 1.15, the default value of 'execution.checkpointing.checkpoints-after-tasks-finish.enabled' has been changed to true,
+          so it does not need to be explicitly configured 'execution.checkpointing.checkpoints-after-tasks-finish.enabled' = 'true'
+      </td>
+    </tr>
+    <tr>
+          <td>scan.incremental.snapshot.chunk.key-column</td>
+          <td>optional</td>
+          <td style="word-wrap: break-word;">(none)</td>
+          <td>String</td>
+          <td>The chunk key of table snapshot, captured tables are split into multiple chunks by a chunk key when read the snapshot of table.
+            By default, the chunk key is 'ROWID'. This column must be a column of the primary key.</td>
     </tr>
     </tbody>
 </table>    
@@ -436,7 +449,7 @@ CREATE TABLE products (
     'port' = '1521',
     'username' = 'flinkuser',
     'password' = 'flinkpw',
-    'database-name' = 'XE',
+    'database-name' = 'ORCLCDB',
     'schema-name' = 'inventory',
     'table-name' = 'products',
     'debezium.log.mining.strategy' = 'online_catalog',
@@ -457,7 +470,7 @@ The Oracle CDC connector is a Flink Source connector which will read database sn
 
 The config option `scan.startup.mode` specifies the startup mode for Oracle CDC consumer. The valid enumerations are:
 
-- `initial` (default): Performs an initial snapshot on the monitored database tables upon first startup, and continue to read the latest binlog.
+- `initial` (default): Performs an initial snapshot on the monitored database tables upon first startup, and continue to read the latest redo log.
 - `latest-offset`: Never to perform a snapshot on the monitored database tables upon first startup, just read from
   the change since the connector was started.
 
@@ -469,7 +482,62 @@ The Oracle CDC source can't work in parallel reading, because there is only one 
 
 ### DataStream Source
 
-The Oracle CDC connector can also be a DataStream source. You can create a SourceFunction as the following shows:
+The Oracle CDC connector can also be a DataStream source. There are two modes for the DataStream source:
+
+- incremental snapshot based, which allows parallel reading
+- SourceFunction based, which only supports single thread reading
+
+#### Incremental Snapshot based DataStream (Experimental)
+
+```java
+import com.ververica.cdc.connectors.base.options.StartupOptions;
+import com.ververica.cdc.connectors.base.source.jdbc.JdbcIncrementalSource;
+import com.ververica.cdc.connectors.oracle.source.OracleSourceBuilder;
+import com.ververica.cdc.debezium.JsonDebeziumDeserializationSchema;
+import org.apache.flink.api.common.eventtime.WatermarkStrategy;
+import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+
+import java.util.Properties;
+
+public class OracleParallelSourceExample {
+
+    public static void main(String[] args) throws Exception {
+        Properties debeziumProperties = new Properties();
+        debeziumProperties.setProperty("log.mining.strategy", "online_catalog");
+
+        JdbcIncrementalSource<String> oracleChangeEventSource =
+                new OracleSourceBuilder()
+                        .hostname("host")
+                        .port(1521)
+                        .databaseList("ORCLCDB")
+                        .schemaList("DEBEZIUM")
+                        .tableList("DEBEZIUM.PRODUCTS")
+                        .username("username")
+                        .password("password")
+                        .deserializer(new JsonDebeziumDeserializationSchema())
+                        .includeSchemaChanges(true) // output the schema changes as well
+                        .startupOptions(StartupOptions.initial())
+                        .debeziumProperties(debeziumProperties)
+                        .splitSize(2)
+                        .build();
+
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        // enable checkpoint
+        env.enableCheckpointing(3000L);
+        // set the source parallelism to 4
+        env.fromSource(
+                        oracleChangeEventSource,
+                        WatermarkStrategy.noWatermarks(),
+                        "OracleParallelSource")
+                .setParallelism(4)
+                .print()
+                .setParallelism(1);
+        env.execute("Print Oracle Snapshot + RedoLog");
+    }
+}
+```
+
+#### SourceFunction-based DataStream
 
 ```java
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
@@ -482,7 +550,7 @@ public class OracleSourceExample {
      SourceFunction<String> sourceFunction = OracleSource.<String>builder()
              .url("jdbc:oracle:thin:@{hostname}:{port}:{database}")
              .port(1521)
-             .database("XE") // monitor XE database
+             .database("ORCLCDB") // monitor XE database
              .schemaList("inventory") // monitor inventory schema
              .tableList("inventory.products") // monitor products table
              .username("flinkuser")

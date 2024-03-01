@@ -11,8 +11,8 @@ In order to set up the OceanBase CDC connector, the following table provides dep
 <dependency>
   <groupId>com.ververica</groupId>
   <artifactId>flink-connector-oceanbase-cdc</artifactId>
-  <!-- The dependency is available only for stable releases, SNAPSHOT dependency need build by yourself. -->
-  <version>2.5-SNAPSHOT</version>
+  <!-- The dependency is available only for stable releases, SNAPSHOT dependencies need to be built based on master or release- branches by yourself. -->
+  <version>3.0-SNAPSHOT</version>
 </dependency>
 ```
 
@@ -30,7 +30,7 @@ If you want to use OceanBase JDBC driver to connect to the enterprise edition da
 
 ```Download link is available only for stable releases.```
 
-Download [flink-sql-connector-oceanbase-cdc-2.5-SNAPSHOT.jar](https://repo1.maven.org/maven2/com/ververica/flink-sql-connector-oceanbase-cdc/2.5-SNAPSHOT/flink-sql-connector-oceanbase-cdc-2.5-SNAPSHOT.jar) and put it under `<FLINK_HOME>/lib/`.
+Download [flink-sql-connector-oceanbase-cdc-3.0-SNAPSHOT.jar](https://repo1.maven.org/maven2/com/ververica/flink-sql-connector-oceanbase-cdc/3.0-SNAPSHOT/flink-sql-connector-oceanbase-cdc-3.0-SNAPSHOT.jar) and put it under `<FLINK_HOME>/lib/`.
 
 **Note:** flink-sql-connector-oceanbase-cdc-XXX-SNAPSHOT version is the code corresponding to the development branch. Users need to download the source code and compile the corresponding jar. Users should use the released version, such as [flink-sql-connector-oceanbase-cdc-2.2.1.jar](https://mvnrepository.com/artifact/com.ververica/flink-sql-connector-oceanbase-cdc), the released version will be available in the Maven central warehouse.
 
@@ -313,6 +313,13 @@ The OceanBase CDC Connector contains some options for both sql and stream api as
                 <td style="word-wrap: break-word;">(none)</td>
                 <td>String</td>
                 <td>Option to pass custom JDBC URL properties. User can pass custom properties like 'jdbc.properties.useSSL' = 'false'.</td>
+            </tr>
+            <tr>
+                <td>obcdc.properties.*</td>
+                <td>optional</td>
+                <td style="word-wrap: break-word;">(none)</td>
+                <td>String</td>
+                <td>Option to pass custom configurations to the <code>libobcdc</code>, eg: 'obcdc.properties.sort_trans_participants' = '1'. Please refer to <a href="https://en.oceanbase.com/docs/common-oceanbase-database-10000000000872541">obcdc parameters</a> for more details.</td>
             </tr>
         </tbody>
     </table>
@@ -607,7 +614,7 @@ Data Type Mapping
             </tr>
             <tr>
                 <td>BIT(n)</td>
-                <td>BINARY(⌈n/8⌉)</td>
+                <td>BINARY(⌈(n + 7) / 8⌉)</td>
                 <td></td>
             </tr>
             <tr>
